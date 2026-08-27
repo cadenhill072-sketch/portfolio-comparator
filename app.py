@@ -523,140 +523,144 @@ with tab1:
 
 with tab2:
     st.subheader("🎯 Max Sharpe Ratio Optimizer")
-    st.markdown("""
-    Select a brokerage and tickers. The optimizer finds the **exact weights** that maximize the
-    Sharpe ratio (best risk-adjusted return) using **Modern Portfolio Theory**.
-    """)
+    st.markdown("Select tickers and hit **Optimize** — the algorithm finds the exact weights that produce the highest possible Sharpe ratio using Modern Portfolio Theory.")
 
-    col1, col2 = st.columns([1, 2])
-
-    with col1:
+    # ── Controls ──
+    c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
+    with c1:
         brokerage = st.selectbox("Brokerage", list(BROKERAGES.keys()), key="brok_opt")
-        opt_years = st.selectbox("Data period for optimization", [1, 3, 5, 7, 10], index=3, key="opt_yrs")
-        min_w = st.number_input("Min weight per asset (%)", 0.0, 20.0, 0.0, 0.5, format="%.1f") / 100
-        max_w = st.number_input("Max weight per asset (%)", 10.0, 100.0, 100.0, 1.0, format="%.1f") / 100
+    with c2:
+        opt_years = st.selectbox("Data period", [1, 3, 5, 7, 10], index=3, key="opt_yrs")
+    with c3:
+        min_w = st.number_input("Min weight %", 0.0, 20.0, 0.0, 0.5, format="%.1f") / 100
+    with c4:
+        max_w = st.number_input("Max weight %", 10.0, 100.0, 100.0, 1.0, format="%.1f") / 100
 
-        if BROKERAGES[brokerage]:
-            opt_tickers = st.multiselect(
-                "Select tickers to optimize across",
-                BROKERAGES[brokerage],
-                default=BROKERAGES[brokerage][:6],
-                key="opt_tickers"
-            )
+    opt_tickers = st.multiselect(
+        "Select tickers to optimize across (type to search)",
+        options=BROKERAGES[brokerage],
+        default=BROKERAGES[brokerage][:6] if len(BROKERAGES[brokerage]) >= 6 else BROKERAGES[brokerage],
+        placeholder="Type a ticker...",
+        key="opt_tickers",
+    )
+
+    run_opt = st.button("⚡ Optimize — Find Highest Sharpe Ratio", type="primary", use_container_width=True)
+
+    if run_opt:
+        if len(opt_tickers) < 2:
+            st.error("Select at least 2 tickers.")
         else:
-            raw = st.text_area("Enter tickers (one per line or comma-separated)",
-                               "SPY\nQQQ\nVXUS\nBND\nAVUV\nSCHD", key="opt_raw")
-            opt_tickers = [t.strip().upper() for t in raw.replace(",", "\n").split("\n") if t.strip()]
+            proxy_map = resolve_tickers(opt_tickers, brokerage)
+            etf_tickers = list(set(proxy_map.values()))
+            reverse_proxy = {v: k for k, v in proxy_map.items()}
 
-    with col2:
-        if st.button("🚀 Find Optimal Portfolio", type="primary", use_container_width=True):
-            if len(opt_tickers) < 2:
-                st.error("Select at least 2 tickers.")
+            with st.spinner("Computing max Sharpe ratio and efficient frontier..."):
+                opt_prices = fetch_prices(tuple(sorted(etf_tickers)), opt_years)
+                opt_weights, best_sharpe = optimize_sharpe(opt_prices, etf_tickers, rf_rate, min_w, max_w)
+                frontier_df = efficient_frontier(opt_prices, etf_tickers, rf=rf_rate)
+
+            if opt_weights is None:
+                st.error("Optimization failed — try different tickers or a longer data period.")
             else:
-                proxy_map = resolve_tickers(opt_tickers, brokerage)
-                etf_tickers = list(set(proxy_map.values()))
+                display_weights = {reverse_proxy.get(t, t): w for t, w in opt_weights.items()}
+                opt_ret = port_returns(opt_prices, opt_weights)
 
-                with st.spinner("Running optimization..."):
-                    opt_prices = fetch_prices(tuple(sorted(etf_tickers)), opt_years)
-                    opt_weights, best_sharpe = optimize_sharpe(opt_prices, etf_tickers, rf_rate, min_w, max_w)
+                # ── Hero metric ──
+                st.markdown("---")
+                hero_col, _, _ = st.columns([1, 1, 1])
+                with hero_col:
+                    st.metric("🏆 Maximum Sharpe Ratio", f"{best_sharpe:.4f}",
+                              help="Higher = better risk-adjusted return. A Sharpe above 1.0 is generally considered good.")
 
-                if opt_weights is None:
-                    st.error("Optimization failed. Try different tickers or a longer period.")
-                else:
-                    # Reverse proxy map for display
-                    reverse_proxy = {v: k for k, v in proxy_map.items()}
-                    display_weights = {reverse_proxy.get(t, t): w for t, w in opt_weights.items()}
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("CAGR", f"{cagr(opt_ret):.2%}")
+                m2.metric("Annual Volatility", f"{ann_vol(opt_ret):.2%}")
+                m3.metric("Max Drawdown", f"{max_dd(opt_ret):.2%}")
+                m4.metric("Risk-Free Rate Used", f"{rf_rate*100:.1f}%")
 
-                    st.success(f"Optimal Sharpe Ratio: **{best_sharpe:.3f}**")
+                st.markdown("---")
 
-                    # Weights table
+                # ── Weights + pie side by side ──
+                left, right = st.columns([1, 1])
+                with left:
+                    st.subheader("Optimal Weights")
                     wt_df = pd.DataFrame([
-                        {"Ticker": t, "Weight": f"{w*100:.2f}%", "$ Amount": f"${invested_value * w:,.2f}"}
+                        {
+                            "Ticker": t,
+                            "Weight": f"{w*100:.2f}%",
+                            "$ Amount": f"${total_value * (1 - cash_pct/100) * w:,.2f}",
+                        }
                         for t, w in sorted(display_weights.items(), key=lambda x: -x[1])
                     ])
                     st.dataframe(wt_df, hide_index=True, use_container_width=True)
 
-                    # Pie chart
+                    if st.button("➕ Add Optimal to Compare Tab", use_container_width=True):
+                        label = f"Optimal — {brokerage} ({opt_years}yr)"
+                        st.session_state.custom_portfolios[label] = opt_weights
+                        st.success(f"Added to Compare tab!")
+
+                with right:
                     fig_pie = px.pie(
                         values=[w * 100 for w in display_weights.values()],
                         names=list(display_weights.keys()),
-                        title="Optimal Allocation",
-                        hole=0.4,
+                        hole=0.45,
                         color_discrete_sequence=px.colors.qualitative.Bold,
                     )
                     fig_pie.update_traces(textinfo="percent+label", textposition="inside")
-                    fig_pie.update_layout(showlegend=False, height=350, margin=dict(t=40, b=0))
+                    fig_pie.update_layout(showlegend=False, height=320, margin=dict(t=10, b=0))
                     st.plotly_chart(fig_pie, use_container_width=True)
 
-                    # Metrics for the optimal portfolio
-                    opt_ret = port_returns(opt_prices, opt_weights)
-                    if not opt_ret.empty:
-                        m1, m2, m3, m4 = st.columns(4)
-                        m1.metric("CAGR", f"{cagr(opt_ret):.2%}")
-                        m2.metric("Volatility", f"{ann_vol(opt_ret):.2%}")
-                        m3.metric("Sharpe Ratio", f"{best_sharpe:.3f}")
-                        m4.metric("Max Drawdown", f"{max_dd(opt_ret):.2%}")
+                st.markdown("---")
 
-                    # Add to comparison
-                    label = f"Optimal ({brokerage})"
-                    if st.button(f"➕ Add to Comparison Tab"):
-                        st.session_state.custom_portfolios[label] = opt_weights
-                        st.success(f"Added '{label}' to the Compare tab!")
-
-        st.markdown("---")
-
-        # Efficient Frontier
-        st.subheader("📉 Efficient Frontier")
-        if st.button("Plot Efficient Frontier", use_container_width=True):
-            if len(opt_tickers) < 2:
-                st.error("Select at least 2 tickers first.")
-            else:
-                proxy_map = resolve_tickers(opt_tickers, brokerage)
-                etf_tickers = list(set(proxy_map.values()))
-                with st.spinner("Computing efficient frontier..."):
-                    opt_prices = fetch_prices(tuple(sorted(etf_tickers)), opt_years)
-                    frontier_df = efficient_frontier(opt_prices, etf_tickers, rf=rf_rate)
-
+                # ── Efficient Frontier ──
+                st.subheader("📉 Efficient Frontier")
                 if not frontier_df.empty:
-                    # Individual asset dots
                     daily = opt_prices[[t for t in etf_tickers if t in opt_prices.columns]].pct_change().dropna()
                     asset_dots = pd.DataFrame({
                         "Volatility": daily.std() * np.sqrt(252) * 100,
                         "Return": daily.mean() * 252 * 100,
                     })
-                    reverse_proxy = {v: k for k, v in proxy_map.items()}
                     asset_dots.index = [reverse_proxy.get(t, t) for t in asset_dots.index]
 
+                    max_sr_idx = frontier_df["Sharpe"].idxmax()
                     fig_ef = go.Figure()
+
+                    # Frontier line colored by Sharpe
                     fig_ef.add_trace(go.Scatter(
                         x=frontier_df["Volatility"], y=frontier_df["Return"],
-                        mode="lines", name="Efficient Frontier",
-                        line=dict(color="royalblue", width=3),
+                        mode="lines+markers",
+                        name="Efficient Frontier",
                         marker=dict(color=frontier_df["Sharpe"], colorscale="RdYlGn",
-                                    showscale=True, colorbar=dict(title="Sharpe")),
+                                    size=5, showscale=True, colorbar=dict(title="Sharpe")),
+                        line=dict(color="royalblue", width=2),
+                        hovertemplate="Volatility: %{x:.1f}%<br>Return: %{y:.1f}%<br>Sharpe: %{marker.color:.2f}<extra></extra>",
                     ))
+                    # Individual asset dots
                     fig_ef.add_trace(go.Scatter(
                         x=asset_dots["Volatility"], y=asset_dots["Return"],
                         mode="markers+text", name="Individual Assets",
                         text=asset_dots.index, textposition="top center",
-                        marker=dict(size=10, color="orange", symbol="diamond"),
+                        marker=dict(size=11, color="orange", symbol="diamond"),
                     ))
-                    # Max Sharpe point
-                    max_sr_idx = frontier_df["Sharpe"].idxmax()
+                    # Max Sharpe star
                     fig_ef.add_trace(go.Scatter(
                         x=[frontier_df.loc[max_sr_idx, "Volatility"]],
                         y=[frontier_df.loc[max_sr_idx, "Return"]],
-                        mode="markers+text", name="Max Sharpe",
-                        text=["★ Max Sharpe"], textposition="top right",
-                        marker=dict(size=16, color="gold", symbol="star"),
+                        mode="markers+text", name=f"Max Sharpe ({best_sharpe:.2f})",
+                        text=[f"★ {best_sharpe:.2f}"], textposition="top right",
+                        marker=dict(size=18, color="gold", symbol="star"),
                     ))
                     fig_ef.update_layout(
-                        xaxis_title="Risk (Volatility %)", yaxis_title="Return (CAGR %)",
-                        height=480, hovermode="closest",
+                        xaxis_title="Risk (Annual Volatility %)",
+                        yaxis_title="Return (Annual CAGR %)",
+                        height=500, hovermode="closest",
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
                     )
                     fig_ef.update_xaxes(ticksuffix="%")
                     fig_ef.update_yaxes(ticksuffix="%")
                     st.plotly_chart(fig_ef, use_container_width=True)
+                    st.caption("Each point on the frontier is the minimum-risk portfolio for a given return level. The gold star is the max Sharpe (tangency) portfolio.")
+
 
 # ══════════════════════════════════════════════
 # TAB 3 — TICKER LOOKUP
