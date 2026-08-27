@@ -523,12 +523,20 @@ with tab1:
 
 with tab2:
     st.subheader("🎯 Max Sharpe Ratio Optimizer")
-    st.markdown("Select tickers and hit **Optimize** — the algorithm finds the exact weights that produce the highest possible Sharpe ratio using Modern Portfolio Theory.")
+    st.markdown("Find the exact portfolio weights that produce the **highest possible Sharpe ratio** using Modern Portfolio Theory.")
+
+    opt_mode = st.radio(
+        "Optimization scope",
+        ["Custom Selection", "Global — Entire Database"],
+        horizontal=True,
+        help="Global mode screens every ticker in the database and finds the best possible portfolio from all of them.",
+    )
 
     # ── Controls ──
     c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
     with c1:
-        brokerage = st.selectbox("Brokerage", list(BROKERAGES.keys()), key="brok_opt")
+        brokerage = st.selectbox("Brokerage", list(BROKERAGES.keys()), key="brok_opt",
+                                 disabled=(opt_mode == "Global — Entire Database"))
     with c2:
         opt_years = st.selectbox("Data period", [1, 3, 5, 7, 10], index=3, key="opt_yrs")
     with c3:
@@ -536,28 +544,60 @@ with tab2:
     with c4:
         max_w = st.number_input("Max weight %", 10.0, 100.0, 100.0, 1.0, format="%.1f") / 100
 
-    opt_tickers = st.multiselect(
-        "Select tickers to optimize across (type to search)",
-        options=BROKERAGES[brokerage],
-        default=BROKERAGES[brokerage][:6] if len(BROKERAGES[brokerage]) >= 6 else BROKERAGES[brokerage],
-        placeholder="Type a ticker...",
-        key="opt_tickers",
+    if opt_mode == "Global — Entire Database":
+        # Collect every unique ticker across all brokerages
+        all_db_tickers = list({t for pool in BROKERAGES.values() for t in pool})
+        # Resolve Fidelity proxies
+        global_proxy_map = resolve_tickers(all_db_tickers, "Fidelity")
+        etf_universe = list(set(global_proxy_map.values()))
+        st.info(f"Global mode will screen **{len(etf_universe)} tickers** across all brokerages and find the highest Sharpe portfolio. This takes ~30–60 seconds.")
+        opt_tickers = all_db_tickers
+    else:
+        opt_tickers = st.multiselect(
+            "Select tickers to optimize across (type to search)",
+            options=BROKERAGES[brokerage],
+            default=BROKERAGES[brokerage][:6] if len(BROKERAGES[brokerage]) >= 6 else BROKERAGES[brokerage],
+            placeholder="Type a ticker...",
+            key="opt_tickers",
+        )
+
+    run_opt = st.button(
+        "⚡ Optimize — Find Highest Sharpe Ratio" if opt_mode == "Custom Selection"
+        else "🌐 Global Optimize — Search Entire Database",
+        type="primary", use_container_width=True,
     )
 
-    run_opt = st.button("⚡ Optimize — Find Highest Sharpe Ratio", type="primary", use_container_width=True)
-
     if run_opt:
-        if len(opt_tickers) < 2:
+        if opt_mode == "Custom Selection" and len(opt_tickers) < 2:
             st.error("Select at least 2 tickers.")
         else:
-            proxy_map = resolve_tickers(opt_tickers, brokerage)
-            etf_tickers = list(set(proxy_map.values()))
-            reverse_proxy = {v: k for k, v in proxy_map.items()}
+            if opt_mode == "Global — Entire Database":
+                proxy_map = global_proxy_map
+                etf_tickers = etf_universe
+            else:
+                proxy_map = resolve_tickers(opt_tickers, brokerage)
+                etf_tickers = list(set(proxy_map.values()))
 
-            with st.spinner("Computing max Sharpe ratio and efficient frontier..."):
+            reverse_proxy = {v: k for k, v in proxy_map.items()}
+            spinner_msg = (
+                f"Screening {len(etf_tickers)} tickers across entire database — this may take ~60 seconds..."
+                if opt_mode == "Global — Entire Database"
+                else "Computing max Sharpe ratio and efficient frontier..."
+            )
+
+            with st.spinner(spinner_msg):
                 opt_prices = fetch_prices(tuple(sorted(etf_tickers)), opt_years)
-                opt_weights, best_sharpe = optimize_sharpe(opt_prices, etf_tickers, rf_rate, min_w, max_w)
-                frontier_df = efficient_frontier(opt_prices, etf_tickers, rf=rf_rate)
+
+                # Drop tickers with insufficient data (less than 80% of expected trading days)
+                min_obs = int(opt_years * 252 * 0.8)
+                valid_cols = [c for c in opt_prices.columns if opt_prices[c].notna().sum() >= min_obs]
+                opt_prices = opt_prices[valid_cols].dropna()
+
+                if opt_mode == "Global — Entire Database":
+                    st.caption(f"Found data for **{len(valid_cols)}** of {len(etf_tickers)} tickers — optimizing across all valid assets.")
+
+                opt_weights, best_sharpe = optimize_sharpe(opt_prices, valid_cols, rf_rate, min_w, max_w)
+                frontier_df = efficient_frontier(opt_prices, valid_cols, rf=rf_rate)
 
             if opt_weights is None:
                 st.error("Optimization failed — try different tickers or a longer data period.")
