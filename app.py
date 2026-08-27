@@ -154,13 +154,18 @@ def max_dd(ret):
 def ann_vol(ret):
     return ret.std() * np.sqrt(252)
 
-def dca_project(ann_return, weekly_contrib, start_value, age_now, retire_age):
+def dca_project(ann_return, weekly_contrib, start_value, age_now, retire_age, inflation=0.03):
     weekly_rate = (1 + ann_return) ** (1 / 52) - 1
     weeks = (retire_age - age_now) * 52
     value = start_value
     rows = []
     for w in range(weeks + 1):
-        rows.append({"Age": round(age_now + w / 52, 2), "Value": round(value, 2)})
+        real_value = value / ((1 + inflation) ** (w / 52))
+        rows.append({
+            "Age": round(age_now + w / 52, 2),
+            "Nominal Value": round(value, 2),
+            "Real Value (Today's $)": round(real_value, 2),
+        })
         value = value * (1 + weekly_rate) + weekly_contrib
     return pd.DataFrame(rows)
 
@@ -265,6 +270,29 @@ with st.sidebar:
         else:
             if name in st.session_state.active_presets:
                 st.session_state.active_presets.remove(name)
+
+    st.markdown("---")
+    st.subheader("Projection Settings")
+    return_mode = st.radio(
+        "Expected Return Source",
+        ["Preset", "Historical CAGR", "Custom"],
+        index=0,
+        help="Historical CAGR uses your selected backtest period — may be inflated by recent bull market."
+    )
+    if return_mode == "Preset":
+        preset_return = st.selectbox(
+            "Scenario",
+            ["Conservative (7%)", "Moderate (9%)", "Aggressive (11%)"],
+            index=1,
+        )
+        proj_return = {"Conservative (7%)": 0.07, "Moderate (9%)": 0.09, "Aggressive (11%)": 0.11}[preset_return]
+    elif return_mode == "Custom":
+        proj_return = st.number_input("Annual Return (%)", value=8.0, min_value=1.0, max_value=20.0, step=0.5) / 100
+    else:
+        proj_return = None  # use historical CAGR per portfolio
+
+    inflation_rate = st.number_input("Inflation Rate (%)", value=3.0, min_value=0.0, max_value=10.0, step=0.1) / 100
+    show_real = st.checkbox("Show inflation-adjusted (real) values", value=True)
 
     st.markdown("---")
     st.caption("Data via yfinance · Not financial advice")
@@ -416,33 +444,51 @@ with tab1:
 
     # ── DCA Projection ──
     if retire_age > age:
-        st.subheader(f"🚀 DCA Projection — Age {age} → {retire_age} (${dca_weekly:.0f}/wk)")
+        value_col = "Real Value (Today's $)" if show_real else "Nominal Value"
+        value_label = "Projected Value — Today's Dollars (Inflation-Adjusted)" if show_real else "Projected Nominal Value ($)"
+
+        if return_mode == "Preset":
+            st.subheader(f"🚀 DCA Projection — Age {age} → {retire_age} · {preset_return} · ${dca_weekly:.0f}/wk")
+            st.caption(f"Using {proj_return*100:.0f}% annual return · {inflation_rate*100:.1f}% inflation · All portfolios use same rate")
+        elif return_mode == "Custom":
+            st.subheader(f"🚀 DCA Projection — Age {age} → {retire_age} · {proj_return*100:.1f}% return · ${dca_weekly:.0f}/wk")
+            st.caption(f"Custom {proj_return*100:.1f}% annual return · {inflation_rate*100:.1f}% inflation · All portfolios use same rate")
+        else:
+            st.subheader(f"🚀 DCA Projection — Age {age} → {retire_age} · Historical CAGR · ${dca_weekly:.0f}/wk")
+            st.caption(f"⚠️ Uses each portfolio's {backtest_yrs}-yr historical CAGR — recent market was above average. {inflation_rate*100:.1f}% inflation applied.")
+
         fig_proj = go.Figure()
         proj_summary = []
         for i, (label, weights) in enumerate(active_portfolios.items()):
             ret = port_returns(prices, weights)
             if ret.empty:
                 continue
-            df_proj = dca_project(cagr(ret), dca_weekly, invested_value, age, retire_age)
-            fig_proj.add_trace(go.Scatter(x=df_proj["Age"], y=df_proj["Value"], name=label,
-                                          mode="lines", line=dict(width=2, color=colors[i % len(colors)])))
-            row = {"Portfolio": label}
+            used_return = proj_return if proj_return is not None else cagr(ret)
+            df_proj = dca_project(used_return, dca_weekly, invested_value, age, retire_age, inflation_rate)
+            fig_proj.add_trace(go.Scatter(
+                x=df_proj["Age"], y=df_proj[value_col], name=label,
+                mode="lines", line=dict(width=2, color=colors[i % len(colors)]),
+                hovertemplate=f"<b>{label}</b><br>Age: %{{x:.1f}}<br>Value: $%{{y:,.0f}}<extra></extra>",
+            ))
+            row = {"Portfolio": label, "Return Used": f"{used_return*100:.1f}%"}
             for m in [30, 40, 50, 60, retire_age]:
                 if m > age:
                     r = df_proj[df_proj["Age"] >= m]
                     if not r.empty:
-                        row[f"Age {m}"] = f"${r.iloc[0]['Value']:,.0f}"
+                        row[f"Age {m}"] = f"${r.iloc[0][value_col]:,.0f}"
             proj_summary.append(row)
 
-        fig_proj.update_layout(yaxis_title="Projected Value ($)", xaxis_title="Age", hovermode="x unified",
-                                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                                height=420, margin=dict(t=50, b=40))
+        fig_proj.update_layout(
+            yaxis_title=value_label, xaxis_title="Age", hovermode="x unified",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            height=440, margin=dict(t=50, b=40),
+        )
         fig_proj.update_yaxes(tickprefix="$", tickformat=",.0f")
         st.plotly_chart(fig_proj, use_container_width=True)
 
         if proj_summary:
             proj_df = pd.DataFrame(proj_summary)
-            st.dataframe(proj_df[["Portfolio"] + [c for c in proj_df.columns if c != "Portfolio"]],
+            st.dataframe(proj_df[["Portfolio", "Return Used"] + [c for c in proj_df.columns if c not in ("Portfolio", "Return Used")]],
                          hide_index=True, use_container_width=True)
 
     st.markdown("---")
