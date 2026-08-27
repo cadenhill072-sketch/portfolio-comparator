@@ -26,7 +26,36 @@ st.set_page_config(
 # ─────────────────────────────────────────────
 
 BROKERAGES = {
-    "Any / Custom": [],
+    "Any / Custom": [
+        # Broad Market ETFs
+        "SPY", "VOO", "IVV", "VTI", "SCHB", "SCHX", "QQQ", "ONEQ", "IWM", "DIA",
+        "VT", "VXUS", "VEA", "VWO", "EFA", "EEM",
+        # Factor / Style
+        "VUG", "VTV", "SCHG", "SCHV", "AVUV", "AVLV", "VBR", "VBK", "VO", "VB",
+        "IJH", "IJS", "IJR",
+        # Dividends / Income
+        "SCHD", "VYM", "VIG", "SPYD", "JEPI", "JEPQ", "FDVV", "DVY", "HDV",
+        # Bonds
+        "BND", "AGG", "TLT", "IEF", "SHY", "SCHZ", "SCHP", "VTIP", "HYG", "LQD",
+        "VCIT", "VGIT", "VGLT", "VMBS",
+        # Sector ETFs
+        "VGT", "XLK", "SOXX", "SMH", "VHT", "XLV", "IBB", "VFH", "XLF",
+        "VNQ", "VDE", "XLE", "XLU", "XLP", "XLY", "XLI", "VAW", "VIS", "VCR",
+        # Alternatives
+        "GLD", "SLV", "IAU", "PDBC", "DJP",
+        # Fidelity Funds
+        "FXAIX", "FSKAX", "FZROX", "FZILX", "FNCMX", "FSSNX", "FSMDX",
+        "FTIHX", "FXNAX", "FPADX", "FSPSX", "FBIOX", "FSPTX", "FSCSX",
+        "FSELX", "FSPHX", "FSDIX",
+        # Vanguard Funds
+        "VFIAX", "VTSAX", "VBTLX", "VTIAX",
+        # Individual Stocks
+        "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "GOOG", "META", "TSLA",
+        "BRK-B", "JPM", "V", "MA", "JNJ", "PG", "XOM", "CVX", "HD", "UNH",
+        "AVGO", "LLY", "WMT", "MRK", "COST", "NFLX", "AMD", "INTC", "CRM",
+        "ORCL", "ADBE", "NOW", "INTU", "QCOM", "TXN", "ARM", "PLTR", "SNOW",
+        "COIN", "HOOD", "SOFI", "RIVN", "NIO", "F", "GM", "BAC", "WFC", "GS",
+    ],
     "Fidelity": [
         "FXAIX", "FSKAX", "FZROX", "FZILX", "FNCMX", "FSSNX", "FSMDX",
         "FTIHX", "FXNAX", "FPADX", "FSPSX", "FBIOX", "FSPTX", "FSCSX",
@@ -261,48 +290,47 @@ tab1, tab2, tab3 = st.tabs(["🏗️ Build & Compare", "🎯 Optimizer", "🔍 T
 with tab1:
 
     with st.expander("➕ Build a Custom Portfolio", expanded=False):
-        st.markdown("Enter tickers and weights. Weights must sum to **100%**.")
+        st.markdown("Search and select tickers below — then set each weight. Weights must sum to **100%**.")
 
-        brokerage_custom = st.selectbox("Brokerage (filters suggested tickers)", list(BROKERAGES.keys()), key="brok_custom")
-        if BROKERAGES[brokerage_custom]:
-            st.caption("Available tickers: " + "  ·  ".join(BROKERAGES[brokerage_custom]))
-
+        brokerage_custom = st.selectbox("Brokerage (filters available tickers)", list(BROKERAGES.keys()), key="brok_custom")
         port_name = st.text_input("Portfolio Name", placeholder="My Portfolio")
-        num_assets = st.number_input("Number of assets", min_value=1, max_value=15, value=3, step=1)
 
-        tickers_input, weights_input = [], []
-        ticker_options = BROKERAGES[brokerage_custom] if BROKERAGES[brokerage_custom] else []
+        ticker_pool = BROKERAGES[brokerage_custom]
 
-        for i in range(num_assets):
-            c1, c2 = st.columns([3, 1])
-            with c1:
-                if ticker_options:
-                    t = st.selectbox(f"Ticker {i+1}", [""] + ticker_options, key=f"tick_{i}")
-                else:
-                    t = st.text_input(f"Ticker {i+1}", key=f"tick_{i}", placeholder="e.g. SPY").upper().strip()
-            with c2:
-                w = st.number_input(f"Weight % {i+1}", key=f"wt_{i}",
-                                    min_value=0.0, max_value=100.0,
-                                    value=round(100.0 / num_assets, 1), step=0.1, format="%.1f")
-            tickers_input.append(str(t).upper().strip())
-            weights_input.append(w)
+        selected_tickers = st.multiselect(
+            "Search & select tickers (type to filter)",
+            options=ticker_pool,
+            placeholder="Type a ticker e.g. SPY, QQQ, SCHD...",
+            key="multi_tickers",
+        )
 
-        total_w = sum(weights_input)
-        if abs(total_w - 100) > 0.1:
-            st.warning(f"Weights sum to **{total_w:.1f}%** — must equal 100%.")
+        weights_input = []
+        if selected_tickers:
+            st.markdown("**Set weights for each selected ticker:**")
+            default_w = round(100.0 / len(selected_tickers), 1)
+            for t in selected_tickers:
+                w = st.number_input(f"{t} weight (%)", min_value=0.0, max_value=100.0,
+                                    value=default_w, step=0.1, format="%.1f", key=f"wt_{t}")
+                weights_input.append(w)
+
+            total_w = sum(weights_input)
+            if abs(total_w - 100) > 0.1:
+                st.warning(f"Weights sum to **{total_w:.1f}%** — must equal 100%.")
+            else:
+                st.success(f"Weights sum to {total_w:.1f}% ✓")
         else:
-            st.success(f"Weights sum to {total_w:.1f}% ✓")
+            total_w = 0
 
         if st.button("Add Portfolio", type="primary"):
             if not port_name:
                 st.error("Enter a portfolio name.")
+            elif not selected_tickers:
+                st.error("Select at least one ticker.")
             elif abs(total_w - 100) > 0.1:
                 st.error("Fix weights before adding.")
-            elif not all(tickers_input):
-                st.error("Fill in all ticker fields.")
             else:
-                proxy_map = resolve_tickers(tickers_input, brokerage_custom)
-                weights_dict = {proxy_map[t]: w / 100 for t, w in zip(tickers_input, weights_input) if t}
+                proxy_map = resolve_tickers(selected_tickers, brokerage_custom)
+                weights_dict = {proxy_map[t]: w / 100 for t, w in zip(selected_tickers, weights_input)}
                 label = f"{port_name} ({brokerage_custom})" if brokerage_custom != "Any / Custom" else port_name
                 st.session_state.custom_portfolios[label] = weights_dict
                 st.success(f"Added: {label}")
