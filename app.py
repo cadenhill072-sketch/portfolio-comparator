@@ -14,6 +14,8 @@ from datetime import datetime, timedelta
 import warnings
 warnings.filterwarnings("ignore")
 
+from auth import render_auth_sidebar, save_portfolio, load_portfolios, delete_portfolio
+
 st.set_page_config(
     page_title="Portfolio Comparator",
     page_icon="📈",
@@ -251,6 +253,10 @@ with st.sidebar:
     st.title("⚙️ Settings")
     st.markdown("---")
 
+    # ── Auth ──
+    current_user = render_auth_sidebar()
+    st.markdown("---")
+
     st.subheader("Your Info")
     total_value  = st.number_input("Total Portfolio Value ($)", value=10000.0, min_value=0.0, step=500.0)
     cash_pct     = st.slider("Cash % (not yet invested)", 0.0, 100.0, 0.0, 0.5)
@@ -367,15 +373,45 @@ with tab1:
             st.markdown("**Your custom portfolios:**")
             to_remove = []
             for name, weights in st.session_state.custom_portfolios.items():
-                c1, c2 = st.columns([4, 1])
+                c1, c2, c3 = st.columns([3, 1, 1])
                 with c1:
                     st.markdown(f"**{name}** — " + ", ".join([f"{t}: {w*100:.1f}%" for t, w in weights.items()]))
                 with c2:
+                    if current_user and st.button("💾 Save", key=f"save_{name}"):
+                        ok = save_portfolio(
+                            current_user["id"], name, weights,
+                            st.session_state.auth_token,
+                        )
+                        if ok:
+                            st.success("Saved!")
+                with c3:
                     if st.button("Remove", key=f"rm_{name}"):
                         to_remove.append(name)
             for name in to_remove:
                 del st.session_state.custom_portfolios[name]
             st.rerun()
+
+    # ── Load saved portfolios ──
+    if current_user:
+        with st.expander("📂 My Saved Portfolios", expanded=False):
+            saved = load_portfolios(current_user["id"], st.session_state.auth_token)
+            if not saved:
+                st.info("No saved portfolios yet. Build one above and click 💾 Save.")
+            else:
+                for row in saved:
+                    c1, c2, c3 = st.columns([3, 1, 1])
+                    with c1:
+                        weights_preview = ", ".join([f"{t}: {w*100:.1f}%" for t, w in row["weights"].items()])
+                        st.markdown(f"**{row['name']}** — {weights_preview}")
+                    with c2:
+                        if st.button("Load", key=f"load_{row['name']}"):
+                            st.session_state.custom_portfolios[row["name"]] = row["weights"]
+                            st.success(f"Loaded: {row['name']}")
+                            st.rerun()
+                    with c3:
+                        if st.button("🗑️", key=f"del_{row['name']}"):
+                            delete_portfolio(current_user["id"], row["name"], st.session_state.auth_token)
+                            st.rerun()
 
     st.markdown("---")
 
